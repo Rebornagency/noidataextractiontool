@@ -1,5 +1,5 @@
 """
-Batch API Server for NOI Data Extraction
+Compatibility-Fixed API Server for NOI Data Extraction
 This server provides endpoints for extracting financial data from documents,
 including a batch endpoint for processing multiple files at once.
 """
@@ -10,7 +10,7 @@ import logging
 from typing import List, Dict, Any, Optional, Union
 import json
 
-from fastapi import FastAPI, File, UploadFile, Header, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, Header, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -62,29 +62,66 @@ class ExtractedDataModel(BaseModel):
     financials: Dict[str, Any]
 
 class BatchExtractedDataModel(BaseModel):
-    results: List[Dict[str, Any]]
+    results: List[ExtractedDataModel]
     consolidated_data: Dict[str, Any]
+
+# Helper function to validate API key from different header formats
+def validate_api_key(request: Request, api_key: Optional[str] = None):
+    """
+    Validate API key from different header formats for compatibility
+    
+    Args:
+        request: FastAPI request object
+        api_key: API key from standard Header parameter
+        
+    Returns:
+        True if valid, raises HTTPException if invalid
+    """
+    # Check standard header parameter first
+    if api_key and api_key == API_KEY:
+        return True
+    
+    # Check x-api-key header (used by NOI tool)
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key and x_api_key == API_KEY:
+        return True
+    
+    # Check Authorization header
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header == f"Bearer {API_KEY}":
+        return True
+    
+    # If we get here, no valid API key was found
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 @app.get("/")
 async def root():
-    """Root endpoint to check if the API is running"""
-    return {"message": "NOI Data Extraction API is running"}
+    """
+    Root endpoint for API health check
+    """
+    return {"status": "ok", "message": "NOI Data Extraction API is running"}
 
 @app.post("/extract", response_model=ExtractedDataModel)
-async def extract_data(file: UploadFile = File(...), api_key: str = Header(None)):
+async def extract_data(
+    request: Request,
+    file: UploadFile = File(...), 
+    api_key: Optional[str] = Header(None),
+    property_name: Optional[str] = None
+):
     """
-    Extract financial data from a single document
+    Extract financial data from a document
     
     Args:
+        request: FastAPI request object
         file: Uploaded file (PDF, Excel, CSV, TXT)
         api_key: API key for authentication
+        property_name: Optional property name
         
     Returns:
         Extracted financial data
     """
-    # Validate API key
-    if api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    # Validate API key with compatibility for different header formats
+    validate_api_key(request, api_key)
     
     # Get file extension
     file_ext = file.filename.split('.')[-1].lower()
@@ -144,20 +181,24 @@ async def extract_data(file: UploadFile = File(...), api_key: str = Header(None)
             pass
 
 @app.post("/extract-batch", response_model=BatchExtractedDataModel)
-async def extract_batch_data(files: List[UploadFile] = File(...), api_key: str = Header(None)):
+async def extract_batch_data(
+    request: Request,
+    files: List[UploadFile] = File(...), 
+    api_key: Optional[str] = Header(None)
+):
     """
     Extract financial data from multiple documents
     
     Args:
+        request: FastAPI request object
         files: List of uploaded files (PDF, Excel, CSV, TXT)
         api_key: API key for authentication
         
     Returns:
         List of extracted financial data and consolidated data structure
     """
-    # Validate API key
-    if api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    # Validate API key with compatibility for different header formats
+    validate_api_key(request, api_key)
     
     logger.info(f"Processing batch of {len(files)} files")
     
@@ -199,25 +240,20 @@ async def extract_batch_data(files: List[UploadFile] = File(...), api_key: str =
             doc_type = doc_type or "Actual"  # Default to Actual if not determined
             period = period or "Unknown Period"
             
-            # Add result
+            # Add to results
             result = {
                 "document_type": doc_type,
                 "period": period,
-                "financials": validated_data,
-                "filename": file.filename
+                "financials": validated_data
             }
             results.append(result)
-            logger.info(f"Successfully extracted data from {file.filename}")
             
+            logger.info(f"Successfully extracted data from {file.filename}")
+        
         except Exception as e:
             logger.error(f"Error processing file {file.filename}: {str(e)}")
-            # Add error result
-            results.append({
-                "document_type": "Error",
-                "period": "Error",
-                "error": str(e),
-                "filename": file.filename
-            })
+            # Continue processing other files even if one fails
+            continue
         
         finally:
             # Clean up temp file
@@ -226,128 +262,74 @@ async def extract_batch_data(files: List[UploadFile] = File(...), api_key: str =
             except:
                 pass
     
-    # Create consolidated data structure
-    consolidated_data = create_consolidated_data(results)
+    # If no files were successfully processed, return error
+    if not results:
+        raise HTTPException(status_code=500, detail="Failed to process any files")
+    
+    # Consolidate data for NOI tool
+    consolidated_data = consolidate_data(results)
     
     return {
         "results": results,
         "consolidated_data": consolidated_data
     }
 
-def create_consolidated_data(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def consolidate_data(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Create consolidated data structure from multiple document results
+    Consolidate data from multiple documents into a structure for NOI comparisons
     
     Args:
-        results: List of extracted data from multiple documents
+        results: List of extracted data from documents
         
     Returns:
-        Consolidated data structure for NOI comparisons
+        Consolidated data structure
     """
-    # Initialize data structure
-    data = {}
-    metadata = {
-        "document_count": len(results),
-        "periods": [],
-        "has_budget": False,
-        "has_prior_year": False
-    }
+    logger.info("Consolidating data from multiple documents")
     
-    # Process each result
-    for result in results:
-        if "error" in result:
-            continue
-        
-        doc_type = result["document_type"].lower()
-        period = result["period"].replace(" ", "_")
-        financials = result["financials"]
-        
-        # Add period to metadata if not already present
-        if period not in metadata["periods"]:
-            metadata["periods"].append(period)
-        
-        # Initialize period in data if not exists
-        if period not in data:
-            data[period] = {}
-        
-        # Categorize document
-        category = None
-        if "budget" in doc_type:
-            category = "budget"
-            metadata["has_budget"] = True
-        elif "prior year" in doc_type or "2024" in period:
-            category = "prior_year"
-            metadata["has_prior_year"] = True
-        else:
-            category = "actual"
-        
-        # Add data to structure
-        data[period][category] = financials
-    
-    # Create structure expected by calculate_noi_comparisons()
-    consolidated_data = {
+    # Initialize consolidated data structure
+    consolidated = {
         "current_month": None,
         "prior_month": None,
         "budget": None,
         "prior_year": None
     }
     
-    # Find current and prior months
-    sorted_periods = sorted(metadata["periods"])
-    if len(sorted_periods) > 0:
-        current_period = sorted_periods[-1]
-        if "actual" in data.get(current_period, {}):
-            consolidated_data["current_month"] = format_for_noi_comparison(data[current_period]["actual"])
+    # Categorize documents
+    for result in results:
+        doc_type = result["document_type"]
         
-        # Find budget for current period
-        if "budget" in data.get(current_period, {}):
-            consolidated_data["budget"] = format_for_noi_comparison(data[current_period]["budget"])
+        # Skip unknown document types
+        if doc_type == "Unknown":
+            continue
         
-        # Find prior year for current period
-        if "prior_year" in data.get(current_period, {}):
-            consolidated_data["prior_year"] = format_for_noi_comparison(data[current_period]["prior_year"])
+        # Categorize based on document type
+        if doc_type == "Actual Income Statement":
+            # If we don't have a current month yet, use this one
+            if not consolidated["current_month"]:
+                consolidated["current_month"] = result
+            # If we already have a current month, use this as prior month
+            elif not consolidated["prior_month"]:
+                consolidated["prior_month"] = result
+        elif doc_type == "Budget":
+            consolidated["budget"] = result
+        elif doc_type == "Prior Year Actual":
+            consolidated["prior_year"] = result
+    
+    # If we have multiple Actual Income Statements but no explicit categorization,
+    # try to determine which is current and which is prior based on dates
+    if len([r for r in results if r["document_type"] == "Actual Income Statement"]) > 1:
+        actuals = [r for r in results if r["document_type"] == "Actual Income Statement"]
+        # Sort by period (assuming more recent is current)
+        actuals.sort(key=lambda x: x["period"], reverse=True)
         
-        # Find prior month
-        if len(sorted_periods) > 1:
-            prior_period = sorted_periods[-2]
-            if "actual" in data.get(prior_period, {}):
-                consolidated_data["prior_month"] = format_for_noi_comparison(data[prior_period]["actual"])
+        # Assign current and prior
+        if len(actuals) >= 1 and not consolidated["current_month"]:
+            consolidated["current_month"] = actuals[0]
+        if len(actuals) >= 2 and not consolidated["prior_month"]:
+            consolidated["prior_month"] = actuals[1]
     
-    return {
-        "data": data,
-        "metadata": metadata,
-        "consolidated_data": consolidated_data
-    }
-
-def format_for_noi_comparison(financials: Dict[str, Any]) -> Dict[str, float]:
-    """
-    Format financial data for NOI comparison
-    
-    Args:
-        financials: Financial data from extraction
-        
-    Returns:
-        Formatted data with revenue, expenses, and NOI
-    """
-    # Extract the relevant values with defaults of 0 for missing values
-    revenue = financials.get('total_revenue', 0)
-    expenses = financials.get('total_expenses', 0)
-    noi = financials.get('net_operating_income', 0)
-    
-    # If NOI is not provided but we have revenue and expenses, calculate it
-    if noi == 0 and revenue != 0 and expenses != 0:
-        noi = revenue - expenses
-    
-    # Format according to the expected structure
-    formatted_data = {
-        "revenue": revenue,
-        "expenses": expenses,
-        "noi": noi
-    }
-    
-    return formatted_data
+    logger.info(f"Consolidated data: {json.dumps(consolidated, default=str)}")
+    return consolidated
 
 if __name__ == "__main__":
-    # Run the server
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
