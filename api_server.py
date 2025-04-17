@@ -1,6 +1,7 @@
 """
 Enhanced API Server with Multi-File Processing for Real Estate NOI Analyzer
 Provides endpoints for document processing, data extraction, and multi-file analysis
+with compatibility for existing NOI tool
 """
 
 import os
@@ -80,6 +81,7 @@ class MultiFileResultModel(BaseModel):
     documents: List[ExtractedDataModel]
     comparisons: List[ComparisonModel] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
+    consolidated_data: Dict[str, Any] = Field(default_factory=dict)  # Added for compatibility
 
 # API key validation
 def get_api_key(x_api_key: str = Header(...)):
@@ -244,10 +246,14 @@ async def extract_multiple(
         # Generate summary
         summary = generate_summary(results)
         
+        # Create consolidated data in the format expected by the NOI tool
+        consolidated_data = create_consolidated_data(results)
+        
         return {
             "documents": results,
             "comparisons": comparisons,
-            "summary": summary
+            "summary": summary,
+            "consolidated_data": consolidated_data
         }
         
     except HTTPException:
@@ -339,6 +345,8 @@ async def process_single_file(file_path: str, filename: str, openai_api_key: str
                     period = f"{month} {year}"
                 elif year:
                     period = year
+            
+            logger.info(f"Extracted period from filename: {period}")
         
         # If still no period, use a default
         if not period:
@@ -378,6 +386,76 @@ async def process_single_file(file_path: str, filename: str, openai_api_key: str
         logger.error(f"Validation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error validating data: {str(e)}")
 
+def create_consolidated_data(documents: List[ExtractedDataModel]) -> Dict[str, Any]:
+    """
+    Create consolidated data in the format expected by the NOI tool
+    
+    Args:
+        documents: List of extracted document data
+        
+    Returns:
+        Consolidated data dictionary
+    """
+    logger.info("Creating consolidated data for NOI tool compatibility")
+    
+    # Create a dictionary to store data by document type and period
+    consolidated = {}
+    
+    for doc in documents:
+        # Determine document category (actual, budget, prior_year)
+        category = "unknown"
+        if "actual" in doc.document_type.lower() and "prior" not in doc.document_type.lower():
+            # Check if it's current year or prior year
+            if "2024" in doc.period:
+                category = "prior_year"
+            else:
+                category = "actual"
+        elif "budget" in doc.document_type.lower():
+            category = "budget"
+        elif "prior" in doc.document_type.lower():
+            category = "prior_year"
+        
+        # Extract month and year from period
+        month = None
+        year = None
+        
+        # Try to extract month
+        month_match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', doc.period, re.IGNORECASE)
+        if month_match:
+            month = month_match.group(0)
+        
+        # Try to extract year
+        year_match = re.search(r'20\d{2}', doc.period)
+        if year_match:
+            year = year_match.group(0)
+        
+        # Create period key
+        period_key = f"{month}_{year}" if month and year else doc.period.replace(" ", "_")
+        
+        # Create entry if it doesn't exist
+        if period_key not in consolidated:
+            consolidated[period_key] = {}
+        
+        # Add data for this category
+        consolidated[period_key][category] = {
+            "document_type": doc.document_type,
+            "period": doc.period,
+            "financials": doc.financials.__dict__
+        }
+    
+    # Add metadata
+    result = {
+        "data": consolidated,
+        "metadata": {
+            "document_count": len(documents),
+            "periods": list(consolidated.keys()),
+            "has_budget": any("budget" in doc.document_type.lower() for doc in documents),
+            "has_prior_year": any("prior" in doc.document_type.lower() or "2024" in doc.period for doc in documents)
+        }
+    }
+    
+    return result
+
 def generate_document_comparisons(documents: List[ExtractedDataModel]) -> List[ComparisonModel]:
     """
     Generate comparisons between documents
@@ -398,10 +476,14 @@ def generate_document_comparisons(documents: List[ExtractedDataModel]) -> List[C
     
     for doc in documents:
         if "actual" in doc.document_type.lower() and "prior" not in doc.document_type.lower():
-            actuals[doc.period] = doc
+            # Check if it's current year or prior year
+            if "2024" in doc.period:
+                prior_year_actuals[doc.period] = doc
+            else:
+                actuals[doc.period] = doc
         elif "budget" in doc.document_type.lower():
             budgets[doc.period] = doc
-        elif "prior" in doc.document_type.lower() or "previous" in doc.document_type.lower():
+        elif "prior" in doc.document_type.lower():
             prior_year_actuals[doc.period] = doc
     
     # Generate Budget vs Actual comparisons
