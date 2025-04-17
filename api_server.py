@@ -1,6 +1,5 @@
 """
-API Server for Real Estate NOI Analyzer Data Extraction Tool
-Provides endpoints for document processing and data extraction
+Updated API Server with improved error handling for Excel files and validation
 """
 
 import os
@@ -153,7 +152,12 @@ async def extract_data(
     try:
         # Step 1: Preprocess the file
         logger.info("Preprocessing file")
-        preprocessed_data = preprocess_file(temp_file_path)
+        try:
+            preprocessed_data = preprocess_file(temp_file_path)
+            logger.info("Preprocessing completed successfully")
+        except Exception as e:
+            logger.error(f"Preprocessing failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error preprocessing file: {str(e)}")
         
         # Step 2: Classify the document
         logger.info("Classifying document")
@@ -165,23 +169,87 @@ async def extract_data(
             elif file_ext in ['xlsx', 'xls', 'csv']:
                 combined_text = preprocessed_data.get('content', {}).get('text_representation', '')
         
-        classification_result = classify_document(combined_text, openai_api_key)
-        document_type = classification_result.get('document_type', 'Unknown')
-        period = classification_result.get('period', '')
+        try:
+            classification_result = classify_document(combined_text, openai_api_key)
+            logger.info(f"Classification result: {classification_result}")
+            
+            # Ensure document_type and period are valid strings
+            document_type = classification_result.get('document_type', 'Unknown')
+            if document_type is None:
+                document_type = 'Unknown'
+                
+            # Extract period from filename if not found by classifier
+            period = classification_result.get('period', '')
+            if not period:
+                # Try to extract from filename (e.g., Actual_Mar_2025.xlsx)
+                filename_parts = os.path.splitext(file.filename)[0].split('_')
+                if len(filename_parts) >= 2:
+                    # Look for month abbreviations in filename parts
+                    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                    year_pattern = r'20\d{2}'
+                    
+                    month = None
+                    year = None
+                    
+                    for part in filename_parts:
+                        # Check for month
+                        for m in months:
+                            if m.lower() in part.lower():
+                                month = m
+                                break
+                        
+                        # Check for year (2020-2099)
+                        import re
+                        year_match = re.search(year_pattern, part)
+                        if year_match:
+                            year = year_match.group(0)
+                    
+                    if month and year:
+                        period = f"{month} {year}"
+                    elif year:
+                        period = year
+            
+            # If still no period, use a default
+            if not period:
+                period = "Unknown Period"
+                
+        except Exception as e:
+            logger.error(f"Classification failed: {str(e)}")
+            document_type = "Unknown"
+            period = "Unknown Period"
         
         # Step 3: Extract financial data using GPT
         logger.info("Extracting financial data")
-        extracted_data = extract_financial_data(combined_text, document_type, period, openai_api_key)
+        try:
+            extracted_data = extract_financial_data(combined_text, document_type, period, openai_api_key)
+            logger.info("Financial data extraction completed")
+        except Exception as e:
+            logger.error(f"Financial data extraction failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error extracting financial data: {str(e)}")
         
         # Step 4: Validate and format the data
         logger.info("Validating and formatting data")
-        formatted_data, warnings = validate_and_format_data(extracted_data)
+        try:
+            formatted_data, warnings = validate_and_format_data(extracted_data)
+            logger.info(f"Validation completed with {len(warnings)} warnings")
+            
+            # Ensure document_type and period are valid strings
+            if formatted_data.get('document_type') is None:
+                formatted_data['document_type'] = "Unknown"
+            if formatted_data.get('period') is None:
+                formatted_data['period'] = "Unknown Period"
+                
+            # Add warnings to the response
+            formatted_data['warnings'] = warnings
+            
+            return formatted_data
+        except Exception as e:
+            logger.error(f"Validation failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error validating data: {str(e)}")
         
-        # Add warnings to the response
-        formatted_data['warnings'] = warnings
-        
-        return formatted_data
-        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         logger.error(f"Error processing file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
