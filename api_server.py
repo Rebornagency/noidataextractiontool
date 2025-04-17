@@ -1,7 +1,7 @@
 """
-Compatibility-Fixed API Server for NOI Data Extraction
+Comprehensive API Server with Authentication and Data Structure Fixes
 This server provides endpoints for extracting financial data from documents,
-including a batch endpoint for processing multiple files at once.
+with fixes for authentication and data structure compatibility.
 """
 
 import os
@@ -77,21 +77,28 @@ def validate_api_key(request: Request, api_key: Optional[str] = None):
     Returns:
         True if valid, raises HTTPException if invalid
     """
+    # Log all headers for debugging
+    logger.info(f"Request headers: {dict(request.headers)}")
+    
     # Check standard header parameter first
     if api_key and api_key == API_KEY:
+        logger.info("API key validated via standard header parameter")
         return True
     
     # Check x-api-key header (used by NOI tool)
     x_api_key = request.headers.get("x-api-key")
     if x_api_key and x_api_key == API_KEY:
+        logger.info("API key validated via x-api-key header")
         return True
     
     # Check Authorization header
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header == f"Bearer {API_KEY}":
+        logger.info("API key validated via Authorization header")
         return True
     
     # If we get here, no valid API key was found
+    logger.warning("Invalid API key or missing API key")
     raise HTTPException(status_code=401, detail="Invalid API key")
 
 @app.get("/")
@@ -171,6 +178,9 @@ async def extract_data(
     
     except Exception as e:
         logger.error(f"Error processing file {file.filename}: {str(e)}")
+        # Include traceback for better debugging
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
     
     finally:
@@ -201,6 +211,10 @@ async def extract_batch_data(
     validate_api_key(request, api_key)
     
     logger.info(f"Processing batch of {len(files)} files")
+    
+    # Log file names for debugging
+    file_names = [file.filename for file in files]
+    logger.info(f"Files to process: {file_names}")
     
     results = []
     for file in files:
@@ -244,7 +258,8 @@ async def extract_batch_data(
             result = {
                 "document_type": doc_type,
                 "period": period,
-                "financials": validated_data
+                "financials": validated_data,
+                "filename": file.filename  # Include filename for reference
             }
             results.append(result)
             
@@ -252,6 +267,20 @@ async def extract_batch_data(
         
         except Exception as e:
             logger.error(f"Error processing file {file.filename}: {str(e)}")
+            # Include traceback for better debugging
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Add error result
+            error_result = {
+                "document_type": "Error",
+                "period": "Error",
+                "financials": {},
+                "filename": file.filename,
+                "error": str(e)
+            }
+            results.append(error_result)
+            
             # Continue processing other files even if one fails
             continue
         
@@ -269,10 +298,14 @@ async def extract_batch_data(
     # Consolidate data for NOI tool
     consolidated_data = consolidate_data(results)
     
-    return {
+    # Log the final response structure for debugging
+    response = {
         "results": results,
         "consolidated_data": consolidated_data
     }
+    logger.info(f"Final response structure: {json.dumps(response, default=str)[:500]}...")
+    
+    return response
 
 def consolidate_data(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -298,8 +331,8 @@ def consolidate_data(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     for result in results:
         doc_type = result["document_type"]
         
-        # Skip unknown document types
-        if doc_type == "Unknown":
+        # Skip unknown document types and errors
+        if doc_type in ["Unknown", "Error"]:
             continue
         
         # Categorize based on document type
@@ -328,7 +361,7 @@ def consolidate_data(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(actuals) >= 2 and not consolidated["prior_month"]:
             consolidated["prior_month"] = actuals[1]
     
-    logger.info(f"Consolidated data: {json.dumps(consolidated, default=str)}")
+    logger.info(f"Consolidated data: {json.dumps(consolidated, default=str)[:500]}...")
     return consolidated
 
 if __name__ == "__main__":
