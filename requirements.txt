@@ -1,0 +1,10 @@
+fastapi==0.103.1
+uvicorn==0.23.2
+python-multipart==0.0.6
+pydantic==2.3.0
+openai==0.28.0
+pandas==2.1.0
+openpyxl==3.1.2
+pdfplumber==0.10.2
+python-magic==0.4.27
+chardet==5.2.0
