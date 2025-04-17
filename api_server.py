@@ -1,7 +1,8 @@
 """
-Comprehensive API Server with Authentication and Data Structure Fixes
+Complete API Server with Type Compatibility Fix and Period Parameter Fix
 This server provides endpoints for extracting financial data from documents,
-with fixes for authentication and data structure compatibility.
+with fixes for authentication, data structure compatibility, type handling,
+and the missing period parameter issue.
 """
 
 import os
@@ -145,6 +146,9 @@ async def extract_data(
         logger.info(f"Preprocessing file: {file.filename}")
         preprocessed_data = preprocess_file(temp_file_path)
         
+        # Log the type of preprocessed_data for debugging
+        logger.info(f"Preprocessed data type: {type(preprocessed_data)}")
+        
         # Step 2: Classify the document
         logger.info(f"Classifying document: {file.filename}")
         doc_type, period = classify_document(preprocessed_data)
@@ -154,9 +158,9 @@ async def extract_data(
             period = extract_period_from_filename(file.filename)
             logger.info(f"Extracted period from filename: {period}")
         
-        # Step 3: Extract financial data
+        # Step 3: Extract financial data - FIXED: Added period parameter
         logger.info(f"Extracting financial data: {file.filename}")
-        extracted_data = extract_financial_data(preprocessed_data, doc_type)
+        extracted_data = extract_financial_data(preprocessed_data, doc_type, period)
         
         # Step 4: Validate and format data
         logger.info(f"Validating and formatting data: {file.filename}")
@@ -233,6 +237,9 @@ async def extract_batch_data(
             logger.info(f"Preprocessing file: {file.filename}")
             preprocessed_data = preprocess_file(temp_file_path)
             
+            # Log the type of preprocessed_data for debugging
+            logger.info(f"Preprocessed data type: {type(preprocessed_data)}")
+            
             # Step 2: Classify the document
             logger.info(f"Classifying document: {file.filename}")
             doc_type, period = classify_document(preprocessed_data)
@@ -242,9 +249,9 @@ async def extract_batch_data(
                 period = extract_period_from_filename(file.filename)
                 logger.info(f"Extracted period from filename: {period}")
             
-            # Step 3: Extract financial data
+            # Step 3: Extract financial data - FIXED: Added period parameter
             logger.info(f"Extracting financial data: {file.filename}")
-            extracted_data = extract_financial_data(preprocessed_data, doc_type)
+            extracted_data = extract_financial_data(preprocessed_data, doc_type, period)
             
             # Step 4: Validate and format data
             logger.info(f"Validating and formatting data: {file.filename}")
