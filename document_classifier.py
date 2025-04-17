@@ -1,5 +1,6 @@
 """
-Updated Document Classifier Module with improved period extraction
+Document Classifier Module for Real Estate NOI Analyzer
+Identifies document type (Actuals, Budget, etc.) and time period
 """
 
 import os
@@ -46,13 +47,12 @@ class DocumentClassifier:
             "Unknown"
         ]
     
-    def classify(self, text: str, filename: Optional[str] = None) -> Dict[str, Any]:
+    def classify(self, text: str) -> Dict[str, Any]:
         """
         Classify document type and extract time period
         
         Args:
             text: Preprocessed text from the document
-            filename: Original filename (optional, used as fallback for period extraction)
             
         Returns:
             Dict containing document type and period
@@ -62,35 +62,23 @@ class DocumentClassifier:
         # First try rule-based classification for efficiency
         rule_based_result = self._rule_based_classification(text)
         
-        # If rule-based classification is confident, use its result
+        # If rule-based classification is confident, return the result
         if rule_based_result.get('confidence', 0) > 0.8:
             logger.info(f"Rule-based classification successful: {rule_based_result}")
-            document_type = rule_based_result['document_type']
-            period = rule_based_result['period']
-        else:
-            # Otherwise, use GPT for classification
-            gpt_result = self._gpt_classification(text)
-            logger.info(f"GPT classification result: {gpt_result}")
-            document_type = gpt_result['document_type']
-            period = gpt_result['period']
+            return {
+                'document_type': rule_based_result['document_type'],
+                'period': rule_based_result['period'],
+                'method': 'rule_based'
+            }
         
-        # Ensure document_type is a valid string
-        if document_type is None:
-            document_type = "Unknown"
+        # Otherwise, use GPT for classification
+        gpt_result = self._gpt_classification(text)
+        logger.info(f"GPT classification result: {gpt_result}")
         
-        # If period is still None, try to extract from filename
-        if (period is None or period == "") and filename:
-            period = self._extract_period_from_filename(filename)
-            logger.info(f"Extracted period from filename: {period}")
-        
-        # If still no period, use a default
-        if period is None or period == "":
-            period = "Unknown Period"
-            
         return {
-            'document_type': document_type,
-            'period': period,
-            'method': 'rule_based' if rule_based_result.get('confidence', 0) > 0.8 else 'gpt'
+            'document_type': gpt_result['document_type'],
+            'period': gpt_result['period'],
+            'method': 'gpt'
         }
     
     def _rule_based_classification(self, text: str) -> Dict[str, Any]:
@@ -236,65 +224,66 @@ Text:
                 'document_type': 'Unknown',
                 'period': None
             }
-    
-    def _extract_period_from_filename(self, filename: str) -> Optional[str]:
-        """
-        Extract period information from filename
-        
-        Args:
-            filename: Original filename
-            
-        Returns:
-            Extracted period or None if not found
-        """
-        if not filename:
-            return None
-            
-        # Remove file extension
-        filename_parts = os.path.splitext(filename)[0].split('_')
-        
-        # Define month abbreviations and pattern for year
-        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        year_pattern = r'20\d{2}'
-        
-        month = None
-        year = None
-        
-        for part in filename_parts:
-            # Check for month
-            for m in months:
-                if m.lower() in part.lower():
-                    month = m
-                    break
-            
-            # Check for year (2020-2099)
-            year_match = re.search(year_pattern, part)
-            if year_match:
-                year = year_match.group(0)
-        
-        # Construct period string
-        if month and year:
-            return f"{month} {year}"
-        elif year:
-            return year
-            
-        return None
 
 
-def classify_document(text: str, api_key: Optional[str] = None, filename: Optional[str] = None) -> Dict[str, Any]:
+def classify_document(text: str, api_key: Optional[str] = None) -> Tuple[str, Optional[str]]:
     """
     Convenience function to classify a document
     
     Args:
         text: Preprocessed text from the document
         api_key: OpenAI API key (optional)
-        filename: Original filename (optional)
         
     Returns:
-        Dict containing document type and period
+        Tuple of (document_type, period)
     """
     classifier = DocumentClassifier(api_key)
-    return classifier.classify(text, filename)
+    result = classifier.classify(text)
+    return result['document_type'], result['period']
+
+
+def extract_period_from_filename(filename: str) -> str:
+    """
+    Extract period information from filename
+    
+    Args:
+        filename: Original filename
+        
+    Returns:
+        Extracted period or "Unknown Period" if not found
+    """
+    if not filename:
+        return "Unknown Period"
+            
+    # Remove file extension
+    filename_parts = os.path.splitext(filename)[0].split('_')
+    
+    # Define month abbreviations and pattern for year
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    year_pattern = r'20\d{2}'
+    
+    month = None
+    year = None
+    
+    for part in filename_parts:
+        # Check for month
+        for m in months:
+            if m.lower() in part.lower():
+                month = m
+                break
+        
+        # Check for year (2020-2099)
+        year_match = re.search(year_pattern, part)
+        if year_match:
+            year = year_match.group(0)
+    
+    # Construct period string
+    if month and year:
+        return f"{month} {year}"
+    elif year:
+        return year
+            
+    return "Unknown Period"
 
 
 if __name__ == "__main__":
@@ -302,17 +291,20 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python document_classifier.py <text_file> [filename]")
+        print("Usage: python document_classifier.py <text_file>")
         sys.exit(1)
     
     file_path = sys.argv[1]
-    filename = sys.argv[2] if len(sys.argv) > 2 else None
     
     try:
         with open(file_path, 'r') as f:
             text = f.read()
         
-        result = classify_document(text, filename=filename)
+        doc_type, period = classify_document(text)
+        result = {
+            "document_type": doc_type,
+            "period": period
+        }
         print(json.dumps(result, indent=2))
     except Exception as e:
         print(f"Error: {str(e)}")
