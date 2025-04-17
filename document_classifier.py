@@ -1,13 +1,13 @@
 """
-Document Classifier Module for Real Estate NOI Analyzer
-Identifies document type (Actuals, Budget, etc.) and time period
+Fixed Preprocessing Module and Document Classifier Integration
+This module fixes the type mismatch between preprocessing_module and document_classifier
 """
 
 import os
 import logging
 import json
 import re
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Union
 import openai
 
 # Configure logging
@@ -47,17 +47,42 @@ class DocumentClassifier:
             "Unknown"
         ]
     
-    def classify(self, text: str) -> Dict[str, Any]:
+    def classify(self, text_or_data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         """
         Classify document type and extract time period
         
         Args:
-            text: Preprocessed text from the document
+            text_or_data: Preprocessed text from the document or data dictionary
             
         Returns:
             Dict containing document type and period
         """
         logger.info("Classifying document and extracting time period")
+        
+        # Handle both string and dictionary input
+        if isinstance(text_or_data, dict):
+            # Extract text from dictionary if it's a dictionary
+            logger.info("Input is a dictionary, extracting text content")
+            
+            # Try to extract text from common dictionary structures
+            if 'text' in text_or_data:
+                text = text_or_data['text']
+            elif 'content' in text_or_data:
+                text = text_or_data['content']
+            elif 'data' in text_or_data and isinstance(text_or_data['data'], str):
+                text = text_or_data['data']
+            else:
+                # Convert the entire dictionary to a string as fallback
+                text = json.dumps(text_or_data)
+                logger.warning("Could not find text field in dictionary, using JSON string representation")
+        else:
+            # Use the input directly if it's already a string
+            text = text_or_data
+        
+        # Ensure text is a string
+        if not isinstance(text, str):
+            text = str(text)
+            logger.warning(f"Converted non-string input to string: {type(text_or_data)}")
         
         # First try rule-based classification for efficiency
         rule_based_result = self._rule_based_classification(text)
@@ -226,20 +251,30 @@ Text:
             }
 
 
-def classify_document(text: str, api_key: Optional[str] = None) -> Tuple[str, Optional[str]]:
+def classify_document(text_or_data: Union[str, Dict[str, Any]], api_key: Optional[str] = None) -> Tuple[str, Optional[str]]:
     """
     Convenience function to classify a document
     
     Args:
-        text: Preprocessed text from the document
+        text_or_data: Preprocessed text from the document or data dictionary
         api_key: OpenAI API key (optional)
         
     Returns:
         Tuple of (document_type, period)
     """
     classifier = DocumentClassifier(api_key)
-    result = classifier.classify(text)
-    return result['document_type'], result['period']
+    
+    try:
+        # Log input type for debugging
+        logger.info(f"classify_document input type: {type(text_or_data)}")
+        
+        result = classifier.classify(text_or_data)
+        return result['document_type'], result['period']
+    except Exception as e:
+        logger.error(f"Error in classify_document: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return "Unknown", None
 
 
 def extract_period_from_filename(filename: str) -> str:
